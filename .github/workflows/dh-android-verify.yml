@@ -1,0 +1,71 @@
+name: DH Android Emulator Verify
+on:
+  workflow_dispatch:
+    inputs:
+      reuse_apk_run_id:
+        description: 'Reuse the dh-apk from this build run id (optional; skips rebuild)'
+        required: false
+        default: ''
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Get APK (reuse prebuilt or build)
+        working-directory: dh-android
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE: ${{ github.event.inputs.reuse_apk_run_id }}
+        run: |
+          mkdir -p app/build/outputs/apk/debug
+          if [ -n "$REUSE" ]; then
+            echo "Reusing APK from build run $REUSE (no rebuild)"
+            gh run download "$REUSE" -n dh-apk -D /tmp/reuse -R "$GITHUB_REPOSITORY" || true
+            APK=$(find /tmp/reuse -name '*.apk' | head -1)
+            if [ -n "$APK" ]; then cp "$APK" app/build/outputs/apk/debug/app-debug.apk; echo "REUSED prebuilt APK"; fi
+          fi
+          if [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "Building fresh debug APK"; gradle assembleDebug --no-daemon --stacktrace
+          fi
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run emulator and capture real evidence
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb install -r dh-android/app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c || true
+            adb shell monkey -p host.dh.app -c android.intent.category.LAUNCHER 1
+            sleep 10
+            adb exec-out screencap -p > screenshot.png
+            adb shell dumpsys activity activities | grep -iE 'ResumedActivity|mResumedActivity' > activity.txt || true
+            adb shell pidof host.dh.app > pidof.txt || true
+            adb logcat -d -b crash > crash.txt || true
+            adb logcat -d > logcat.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dh-emulator-evidence
+          path: |
+            screenshot.png
+            activity.txt
+            pidof.txt
+            crash.txt
+            logcat.txt
+            dh-android/app/build/outputs/apk/debug/app-debug.apk
