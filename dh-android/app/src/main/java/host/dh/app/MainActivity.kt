@@ -8,8 +8,6 @@ class MainActivity : AppCompatActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContentView(R.layout.activity_main)
-    val label: String? = null
-    // BUG: force-unwrap of a null value -> NullPointerException on launch
-    findViewById<TextView>(R.id.headline).text = label!!.uppercase()
+    findViewById<TextView>(R.id.headline).text = getString(R.string.headline)
   }
 }
